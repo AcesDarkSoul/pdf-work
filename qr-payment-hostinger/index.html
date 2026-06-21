@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Secure QR Payment</title>
+
+<!-- CRITICAL: Block WebSocket to localhost IMMEDIATELY - Must be first script -->
+<script src="websocket-block.js"></script>
+
+<!-- Firebase Compat SDK (DO NOT MIX WITH import version) -->
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
+
+<!-- QRCode Library -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+<!-- OCR Library (Tesseract.js) for payment screenshot text extraction -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+<link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+
+<div class="header">💳 Secure QR Payment</div>
+
+<div class="container">
+<div id="error" class="error"></div>
+<div id="loading" class="loading">
+<div class="spinner"></div>
+Generating QR Code...
+</div>
+
+<div id="content" class="hidden">
+<div class="card">
+
+<div class="amount">₹ <span id="amountText">0.00</span></div>
+<div class="meta-row">
+<div class="pill timer-pill">⏱️ Valid for: <span id="expiryTimer">10:00</span></div>
+</div>
+
+<div class="qr-box">
+<h3>Scan to Pay</h3>
+<div id="qrcode"></div>
+<p>
+Google Pay • PhonePe • Paytm • BHIM
+</p>
+</div>
+
+<div class="instructions">
+1️⃣ Scan QR with any UPI app<br>
+2️⃣ Pay exact amount shown above<br>
+3️⃣ Take a clear screenshot of the payment<br>
+4️⃣ Upload the screenshot here for fast auto‑verification
+<ul class="highlight-list">
+<li>Screenshot must show <b>amount, date &amp; time</b></li>
+<li>Payment should be done in the <b>last 10 minutes</b></li>
+</ul>
+</div>
+
+</div>
+</div>
+</div>
+
+<div class="upload-section">
+<input type="file" id="fileInput" accept="image/*" hidden>
+<img id="previewImage" class="preview">
+<button class="upload-btn" id="uploadBtn" onclick="pickImage()">
+📷 Upload Payment Screenshot
+</button>
+<div id="status" class="status"></div>
+</div>
+
+<script src="./error-handler.js" defer></script>
+<!-- Payment Verification Module -->
+<script src="./payment-verification.js" defer></script>
+<!-- stub in case main.js fails to load or is slow; keeps onclick from throwing -->
+<script>
+  function pickImage(){
+    console.warn('pickImage called before main.js has loaded');
+    // user will not be able to upload until the real function is defined
+  }
+</script>
+<!-- added diagnostics for script loading -->
+<script src="./main.js" defer
+        onload="console.log('main.js successfully loaded')"
+        onerror="console.error('main.js failed to load', this.src)">
+</script>
+
+</body>
+</html>
