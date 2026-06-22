@@ -4,13 +4,13 @@ import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, collection, updateDoc, query, where, getDocs, deleteDoc } from 'firebase/firestore';
 
 const defaultFirebaseConfig = {
-  apiKey: 'AIzaSyAS77O3L7ttzQ-ivVehqODEyu76Uk7vFM0',
-  authDomain: 'skillwork-65a18.firebaseapp.com',
-  projectId: 'skillwork-65a18',
-  storageBucket: 'skillwork-65a18.firebasestorage.app',
-  messagingSenderId: '205692579256',
-  appId: '1:205692579256:web:eaeb6398dfa5713461b34d',
-  measurementId: 'G-PQEEYLP802',
+  apiKey: 'AIzaSyBeIVwwrvSERG9fYh0_2b0ZdIhsjnkKmF0',
+  authDomain: 'pdf-work-4920e.firebaseapp.com',
+  projectId: 'pdf-work-4920e',
+  storageBucket: 'pdf-work-4920e.firebasestorage.app',
+  messagingSenderId: '807959993441',
+  appId: '1:807959993441:web:f725acd790f284148e9e20',
+  measurementId: 'G-FK7CS9DHYM',
 };
 
 const firebaseConfig = {
@@ -323,7 +323,7 @@ export async function createPaymentRecord(uid, amount, method) {
       userId: uid,
       amount: amount,
       currency: 'INR',
-      method: method, // 'intent' or 'qr'
+      method: method,
       status: 'pending', // 'pending', 'completed', 'failed'
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -402,7 +402,7 @@ export async function createSuccessfulPayment(uid, amount, method, paymentId = n
       userId: uid,
       amount: amount,
       currency: 'INR',
-      method: method, // 'intent' or 'qr'
+      method: method,
       status: 'completed', // Only store successful payments
       date: dateStr, // Date field for sorting (YYYY-MM-DD)
       transactionId: transactionId,

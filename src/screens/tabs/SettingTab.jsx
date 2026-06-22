@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLang } from '../../i18n/LangContext';
-import { getUpiDetails, getProPricing, createPaymentRecord, updatePaymentStatus, createSuccessfulPayment, getUserProfile, updateUserProfile, hasCompletedPremiumPayment, hasPendingPayment, getPaymentStatus } from '../../firebase';
-import { QRCodeSVG as QRCode } from 'qrcode.react';
+import { getProPricing, createPaymentRecord, createSuccessfulPayment, getUserProfile, updateUserProfile, hasCompletedPremiumPayment, hasPendingPayment } from '../../firebase';
+import { createRazorpayOrder, verifyRazorpayPayment, loadRazorpayScript, openRazorpayCheckout } from '../../services/razorpay';
 
 /* ─── Toggle Switch ──────────────────────────────────────────────────────── */
 const Toggle = ({ value, onChange }) => (
@@ -92,10 +92,7 @@ const SettingTab = ({ userName, isPro, onUpgrade, onDowngrade }) => {
   });
 
   // ── payment state ──
-  const [upiDetails, setUpiDetails] = useState(null);
-  const [paymentMethod, setPaymentMethod] = useState('intent'); // 'intent' or 'qr'
   const [proPricing, setProPricing] = useState({ amount: 399, currency: 'INR', description: 'Lifetime Pro Access' });
-  const [currentPayment, setCurrentPayment] = useState(null); // { id, status, ... }
   const [paymentProcessing, setPaymentProcessing] = useState(false);
 
   useEffect(() => {
@@ -240,327 +237,91 @@ const SettingTab = ({ userName, isPro, onUpgrade, onDowngrade }) => {
     showToast('✅ Upgraded to Pro!');
   };
 
-  const handlePaymentIntent = async () => {
+  const handleRazorpayCheckout = async () => {
     const userId = localStorage.getItem('sw_userId');
     if (!userId) {
       showToast('❌ User not logged in');
       return;
     }
 
-    // Check if user already has completed payment
+    if (paymentProcessing) return;
+
     const hasCompleted = await hasCompletedPremiumPayment(userId);
     if (hasCompleted) {
       showToast('✅ You already have premium access!');
       await handleUpgrade();
-      return;
-    }
-
-    // Check for existing pending payment or create new one
-    let payment;
-    const existingPending = await hasPendingPayment(userId);
-    
-    if (existingPending) {
-      payment = existingPending;
-    } else {
-      // Create payment record first
-      payment = await createPaymentRecord(userId, proPricing.amount, 'intent');
-    }
-
-    setCurrentPayment(payment);
-    setPaymentMethod('intent');
-
-    const details = await getUpiDetails();
-    setUpiDetails(details);
-
-    const upiString = `upi://pay?pa=${details.upiId}&am=${proPricing.amount.toFixed(2)}&cu=${proPricing.currency}&tn=${encodeURIComponent(proPricing.description)}`;
-
-    // Try to open the UPI app via intent.
-    const opened = window.open(upiString, '_blank');
-    if (!opened) {
-      // Popup blocked or not supported in webviews, fallback to navigation.
-      window.location.href = upiString;
-    }
-
-    setSheet('verifyPayment');
-    showToast('📱 UPI intent launched. Payment will auto-verify when you return!');
-
-    // Auto-verify when user returns from UPI app (window focus)
-    const handleWindowFocus = async () => {
-      // Wait a bit for payment to process
-      setTimeout(async () => {
-        try {
-          // Check if payment was completed (poll Firebase)
-          const paymentStatus = await getPaymentStatus(payment.id);
-          if (paymentStatus && paymentStatus.status === 'completed') {
-            window.removeEventListener('focus', handleWindowFocus);
-            clearInterval(pollInterval);
-            
-            // Ensure payment is stored as successful with date
-            await createSuccessfulPayment(userId, proPricing.amount, 'intent', payment.id);
-            
-            // Verify payment exists before upgrading
-            const hasPayment = await hasCompletedPremiumPayment(userId);
-            if (hasPayment) {
-              await handleUpgrade();
-              setSheet(null);
-              showToast('✅ Payment verified! Upgraded to Pro!');
-            }
-          }
-        } catch (error) {
-          console.error('Error checking payment status on focus', error);
-        }
-      }, 2000);
-    };
-
-    // Poll for payment status every 3 seconds
-    const pollInterval = setInterval(async () => {
-      try {
-        const paymentStatus = await getPaymentStatus(payment.id);
-        if (paymentStatus && paymentStatus.status === 'completed') {
-          clearInterval(pollInterval);
-          window.removeEventListener('focus', handleWindowFocus);
-          
-          // Ensure payment is stored as successful with date
-          await createSuccessfulPayment(userId, proPricing.amount, 'intent', payment.id);
-          
-          // Verify payment exists before upgrading
-          const hasPayment = await hasCompletedPremiumPayment(userId);
-          if (hasPayment) {
-            await handleUpgrade();
-            setSheet(null);
-            showToast('✅ Payment verified! Upgraded to Pro!');
-          }
-        }
-      } catch (error) {
-        console.error('Error polling payment status', error);
-      }
-    }, 3000); // Check every 3 seconds
-
-    // Also listen for window focus (user returns from UPI app)
-    window.addEventListener('focus', handleWindowFocus);
-
-    // Clean up after 15 minutes
-    setTimeout(() => {
-      clearInterval(pollInterval);
-      window.removeEventListener('focus', handleWindowFocus);
-    }, 15 * 60 * 1000);
-  };
-
-  const handlePaymentQR = async () => {
-    const userId = localStorage.getItem('sw_userId');
-    if (!userId) {
-      showToast('❌ User not logged in');
-      return;
-    }
-
-    // Check if user already has completed payment
-    const hasCompleted = await hasCompletedPremiumPayment(userId);
-    if (hasCompleted) {
-      showToast('✅ You already have premium access!');
-      await handleUpgrade();
-      return;
-    }
-
-    // Check for existing pending payment or create new one
-    let payment;
-    const existingPending = await hasPendingPayment(userId);
-    
-    if (existingPending) {
-      payment = existingPending;
-    } else {
-      // Create payment record first
-      payment = await createPaymentRecord(userId, proPricing.amount, 'qr');
-    }
-
-    setCurrentPayment(payment);
-    setPaymentMethod('qr');
-
-    // Open payment verification page with parameters
-    const paymentUrl = `https://payment.itechvertical.in/?userId=${encodeURIComponent(userId)}&amount=${proPricing.amount}&orderId=${encodeURIComponent(payment.id)}`;
-    
-    // Open in new window/tab
-    const paymentWindow = window.open(paymentUrl, '_blank', 'width=600,height=800');
-    
-    if (!paymentWindow) {
-      showToast('⚠️ Please allow popups to open payment page');
-      return;
-    }
-
-    // Show QR payment status sheet
-    setSheet('qrPayment');
-
-    // Auto-verify function
-    const autoVerifyPayment = async () => {
-      try {
-        // Check payment status in Firebase
-        const paymentStatus = await getPaymentStatus(payment.id);
-        if (paymentStatus && paymentStatus.status === 'completed') {
-          // Payment verified successfully
-          clearInterval(pollInterval);
-          window.removeEventListener('message', handleMessage);
-          
-          // Ensure payment is stored as successful with date
-          await createSuccessfulPayment(userId, proPricing.amount, 'qr', payment.id);
-          
-          // Verify payment exists before upgrading
-          const hasPayment = await hasCompletedPremiumPayment(userId);
-          if (hasPayment) {
-            await handleUpgrade();
-            setSheet(null);
-            showToast('✅ Payment verified! Upgraded to Pro!');
-            return true;
-          }
-        }
-        return false;
-      } catch (error) {
-        console.error('Error auto-verifying payment', error);
-        return false;
-      }
-    };
-
-    // Listen for payment verification messages from web (primary method)
-    const handleMessage = async (event) => {
-      // Only accept messages from payment domain
-      if (event.origin !== 'https://payment.itechvertical.in') {
-        return;
-      }
-
-      try {
-        let data = event.data;
-        if (typeof data === 'string') {
-          data = JSON.parse(data);
-        }
-
-        if (data.type === 'verification_complete' && data.success && data.verified) {
-          // Payment verified successfully via web callback
-          clearInterval(pollInterval);
-          window.removeEventListener('message', handleMessage);
-          
-          // Create/update successful payment record (only store successful payments)
-          await createSuccessfulPayment(userId, proPricing.amount, paymentMethod, payment.id);
-          setCurrentPayment({ ...payment, status: 'completed' });
-          
-          // Auto-verify and upgrade
-          const verified = await autoVerifyPayment();
-          if (!verified) {
-            // If auto-verify didn't work, try manual upgrade
-            const hasPayment = await hasCompletedPremiumPayment(userId);
-            if (hasPayment) {
-              await handleUpgrade();
-              setSheet(null);
-              showToast('✅ Payment verified! Upgraded to Pro!');
-            }
-          }
-        } else if (data.type === 'verification_complete' && !data.success) {
-          // Payment verification failed
-          clearInterval(pollInterval);
-          window.removeEventListener('message', handleMessage);
-          showToast(`❌ Payment verification failed: ${data.message || 'Unknown error'}`);
-        }
-      } catch (error) {
-        console.error('Error handling payment message', error);
-      }
-    };
-
-    window.addEventListener('message', handleMessage);
-
-    // Poll for payment status updates (backup method - checks Firebase directly)
-    const pollInterval = setInterval(async () => {
-      const verified = await autoVerifyPayment();
-      if (verified) {
-        // Already handled in autoVerifyPayment
-        return;
-      }
-    }, 3000); // Check every 3 seconds
-
-    // Clean up after 15 minutes (payment expiry)
-    setTimeout(() => {
-      clearInterval(pollInterval);
-      window.removeEventListener('message', handleMessage);
-    }, 15 * 60 * 1000);
-
-    showToast('📱 Payment page opened. Payment will auto-verify after you upload screenshot!');
-  };
-
-  const handlePaymentCompleted = async () => {
-    const userId = localStorage.getItem('sw_userId');
-    if (!userId) {
-      showToast('❌ User not logged in');
-      return;
-    }
-
-    // Prevent multiple clicks
-    if (paymentProcessing) {
-      return;
-    }
-
-    // Check if user already has completed payment
-    const hasCompleted = await hasCompletedPremiumPayment(userId);
-    if (hasCompleted) {
-      showToast('✅ You already have premium access!');
-      await handleUpgrade(); // Ensure upgrade status is set
-      setSheet(null);
       return;
     }
 
     setPaymentProcessing(true);
+
     try {
-      // Check for existing pending payment first
-      const existingPending = await hasPendingPayment(userId);
-      
+      await loadRazorpayScript();
+
       let payment;
+      const existingPending = await hasPendingPayment(userId);
+
       if (existingPending) {
-        // Use existing pending payment
         payment = existingPending;
-        setCurrentPayment(payment);
-        showToast('📝 Using existing payment record. Verifying...');
       } else {
-        // Create new payment record only if no pending payment exists
-        payment = await createPaymentRecord(userId, proPricing.amount, paymentMethod);
-        setCurrentPayment(payment);
+        payment = await createPaymentRecord(userId, proPricing.amount, 'razorpay');
       }
 
-      // Simulate payment verification (in real app, this would check with payment gateway)
-      setTimeout(async () => {
-        try {
-          // Create/update successful payment record (only store successful payments with date)
-          await createSuccessfulPayment(userId, proPricing.amount, paymentMethod, payment.id);
-          setCurrentPayment({ ...payment, status: 'completed' });
-          setPaymentProcessing(false);
+      const order = await createRazorpayOrder(proPricing.amount, payment.id);
 
-          // Verify payment exists before upgrading
-          const hasPayment = await hasCompletedPremiumPayment(userId);
-          if (hasPayment) {
-            // Now upgrade to Pro only after payment is verified
-            await handleUpgrade();
-            setSheet(null);
-            showToast('✅ Payment verified! Upgraded to Pro!');
-          } else {
-            showToast('❌ Payment verification failed. Please contact support.');
+      openRazorpayCheckout({
+        orderId: order.order_id,
+        amount: order.amount,
+        currency: order.currency,
+        name: 'SkillWork',
+        description: proPricing.description,
+        userName: name || userName,
+        userPhone: phone || localStorage.getItem('sw_phone') || '',
+        onSuccess: async (response) => {
+          try {
+            await verifyRazorpayPayment({
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+            });
+
+            await createSuccessfulPayment(userId, proPricing.amount, 'razorpay', payment.id);
+
+            const hasPayment = await hasCompletedPremiumPayment(userId);
+            if (hasPayment) {
+              await handleUpgrade();
+              setSheet(null);
+              showToast('✅ Payment verified! Upgraded to Pro!');
+            } else {
+              showToast('❌ Payment verification failed. Please contact support.');
+            }
+          } catch (error) {
+            console.error('Payment verification failed', error);
+            showToast(`❌ ${error.message || 'Payment verification failed'}`);
+          } finally {
+            setPaymentProcessing(false);
           }
-        } catch (error) {
-          console.error('Payment verification failed', error);
+        },
+        onDismiss: () => {
           setPaymentProcessing(false);
-          showToast('❌ Payment verification failed. Please try again.');
-        }
-      }, 2000); // Simulate 2-second verification delay
-
+          showToast('Payment cancelled');
+        },
+        onFailure: (error) => {
+          setPaymentProcessing(false);
+          showToast(`❌ Payment failed: ${error?.description || 'Please try again'}`);
+        },
+      });
     } catch (error) {
-      console.error('Failed to create payment record', error);
+      console.error('Razorpay checkout failed', error);
       setPaymentProcessing(false);
-      if (error.message && error.message.includes('already has a completed payment')) {
+      if (error.message?.includes('already has a completed payment')) {
         showToast('✅ You already have premium access!');
         await handleUpgrade();
         setSheet(null);
       } else {
-        showToast('❌ Failed to process payment. Please try again.');
+        showToast(`❌ ${error.message || 'Failed to start payment. Please try again.'}`);
       }
     }
-  };
-
-  const generateUpiString = () => {
-    if (!upiDetails) return '';
-    return `upi://pay?pa=${upiDetails.upiId}&am=${proPricing.amount.toFixed(2)}&cu=${proPricing.currency}&tn=${encodeURIComponent(proPricing.description)}`;
   };
 
   const totalEarned = (() => {
@@ -925,110 +686,17 @@ const SettingTab = ({ userName, isPro, onUpgrade, onDowngrade }) => {
             </p>
             <div style={{ display:'grid', gap:12 }}>
               <button
-                onClick={handlePaymentIntent}
-                style={{ width:'100%', padding:'14px', borderRadius:12, background:'var(--green-light)', border:'1.5px solid var(--green-border)', fontFamily:'var(--font-sans)', fontWeight:700, fontSize:14, color:'var(--green)', cursor:'pointer', transition:'all 0.2s' }}
-                onMouseOver={e => { e.currentTarget.style.borderColor='var(--green)'; e.currentTarget.style.background='var(--green-light)'; }}
-                onMouseOut={e => { e.currentTarget.style.borderColor='var(--green-border)'; e.currentTarget.style.background='var(--green-light)'; }}>
-                📱 Pay ₹{proPricing.amount} (UPI Intent)
-              </button>
-              <button
-                onClick={handlePaymentQR}
-                style={{ width:'100%', padding:'14px', borderRadius:12, background:'rgba(127,86,217,0.1)', border:'1.5px solid rgba(127,86,217,0.3)', fontFamily:'var(--font-sans)', fontWeight:700, fontSize:14, color:'#7F56D9', cursor:'pointer', transition:'all 0.2s' }}
-                onMouseOver={e => { e.currentTarget.style.borderColor='rgba(127,86,217,0.5)'; e.currentTarget.style.background='rgba(127,86,217,0.15)'; }}
-                onMouseOut={e => { e.currentTarget.style.borderColor='rgba(127,86,217,0.3)'; e.currentTarget.style.background='rgba(127,86,217,0.1)'; }}>
-                📷 Pay via QR Code
+                onClick={handleRazorpayCheckout}
+                disabled={paymentProcessing}
+                className="btn-purple"
+                style={{ width:'100%', borderRadius:12, opacity: paymentProcessing ? 0.6 : 1 }}>
+                {paymentProcessing ? '⏳ Processing...' : `💳 Pay ₹${proPricing.amount} with Razorpay`}
               </button>
             </div>
           </div>
         </Sheet>
       )}
 
-      {/* QR Payment Status Sheet - Shows when payment page is opened */}
-      {sheet === 'qrPayment' && currentPayment && (
-        <Sheet title="📷 Payment Verification" onClose={() => setSheet(null)}>
-          <div style={{ textAlign:'center', padding:'8px 0' }}>
-            <div style={{ fontSize:48, marginBottom:12 }}>💳</div>
-            <h4 style={{ fontSize:16, fontWeight:800, marginBottom:8, fontFamily:'var(--font-display)' }}>Payment Page Opened</h4>
-            <p style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.7, marginBottom:20 }}>
-              Complete your payment on the opened page and upload the screenshot for verification.
-              <br /><br />
-              <strong>Amount:</strong> ₹{proPricing.amount}<br />
-              <strong>Payment ID:</strong> {currentPayment.id.substring(0, 12)}...
-            </p>
-            <div style={{ background:'rgba(127,86,217,0.1)', border:'1px solid rgba(127,86,217,0.3)', borderRadius:12, padding:'12px', marginBottom:16, fontSize:12, color:'var(--text-secondary)' }}>
-              <div style={{ fontWeight:700, marginBottom:4 }}>📋 Instructions:</div>
-              <div style={{ textAlign:'left', lineHeight:1.6 }}>
-                1. Scan the QR code on the payment page<br />
-                2. Complete payment in your UPI app<br />
-                3. Take a screenshot of payment confirmation<br />
-                4. Upload screenshot on the payment page<br />
-                5. Wait for automatic verification
-              </div>
-            </div>
-            <button
-              onClick={() => {
-                // Reopen payment page if user closed it
-                const userId = localStorage.getItem('sw_userId');
-                const paymentUrl = `https://payment.itechvertical.in/?userId=${encodeURIComponent(userId)}&amount=${proPricing.amount}&orderId=${encodeURIComponent(currentPayment.id)}`;
-                window.open(paymentUrl, '_blank', 'width=600,height=800');
-                showToast('📱 Payment page reopened');
-              }}
-              className="btn-purple"
-              style={{ width:'100%', borderRadius:12, marginBottom:10 }}>
-              🔄 Reopen Payment Page
-            </button>
-            <button
-              onClick={() => setSheet(null)}
-              style={{ width:'100%', padding:'12px', borderRadius:12, background:'transparent', border:'1px solid var(--border-color)', fontFamily:'var(--font-sans)', fontWeight:600, fontSize:14, color:'var(--text-secondary)', cursor:'pointer' }}>
-              Close (Payment will verify automatically)
-            </button>
-          </div>
-        </Sheet>
-      )}
-
-      {/* Verify Payment Sheet - Auto-verifies when user returns */}
-      {sheet === 'verifyPayment' && upiDetails && (
-        <Sheet title="✅ Payment Verification" onClose={() => setSheet(null)}>
-          <div style={{ textAlign:'center', padding:'8px 0' }}>
-            <div style={{ fontSize:48, marginBottom:12 }}>💳</div>
-            <h4 style={{ fontSize:16, fontWeight:800, marginBottom:8, fontFamily:'var(--font-display)' }}>Payment in Progress</h4>
-            <p style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.7, marginBottom:20 }}>
-              Complete the payment in your UPI app. Your payment will be <strong>automatically verified</strong> when you return to this page.
-            </p>
-            <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:16 }}>
-              Amount: ₹{proPricing.amount}<br />
-              UPI ID: {upiDetails.upiId}
-            </div>
-            <div style={{ background:'rgba(0,195,126,0.1)', border:'1px solid rgba(0,195,126,0.3)', borderRadius:12, padding:'12px', marginBottom:16, fontSize:12, color:'var(--text-secondary)' }}>
-              <div style={{ fontWeight:700, marginBottom:4, color:'var(--green)' }}>🔄 Auto-Verification Active</div>
-              <div style={{ textAlign:'left', lineHeight:1.6 }}>
-                • Payment status is being checked automatically<br />
-                • No need to click any button<br />
-                • You'll be upgraded automatically when payment is confirmed
-              </div>
-            </div>
-            <div style={{ textAlign: 'left', background: 'rgba(0,0,0,0.04)', padding: 10, borderRadius: 12, marginBottom: 14, fontSize: 12, color: 'var(--text-muted)' }}>
-              <div style={{ marginBottom: 8 }}>If your UPI app did not open, copy this link and paste it in your browser or UPI app:</div>
-              <div style={{ wordBreak: 'break-all', marginBottom: 10 }}>{generateUpiString()}</div>
-              <button
-                onClick={() => {
-                  navigator.clipboard?.writeText(generateUpiString());
-                  showToast('✅ Link copied to clipboard');
-                }}
-                style={{ width: '100%', padding: '10px', borderRadius: 10, background: 'rgba(127,86,217,0.15)', border: '1px solid rgba(127,86,217,0.3)', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 12, color: '#7F56D9', cursor: 'pointer' }}>
-                Copy UPI Link
-              </button>
-            </div>
-            <button
-              onClick={handlePaymentCompleted}
-              disabled={paymentProcessing}
-              className="btn-purple"
-              style={{ width:'100%', borderRadius:12, opacity: paymentProcessing ? 0.6 : 1 }}>
-              {paymentProcessing ? '⏳ Verifying Payment...' : '🔄 Manual Verify (if auto-verify fails)'}
-            </button>
-          </div>
-        </Sheet>
-      )}
     </div>
   );
 };
